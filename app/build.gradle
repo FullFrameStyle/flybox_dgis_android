@@ -1,0 +1,145 @@
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+apply plugin: 'kotlin-android-extensions'
+apply plugin: 'com.google.gms.google-services'
+apply plugin: 'com.google.firebase.crashlytics'
+apply plugin: 'de.undercouch.download'
+
+def localProperties = new Properties()
+localProperties.load(new FileInputStream(rootProject.file("local.properties")))
+
+def unstrippedLibsDir = "${project.buildDir}/unstripped/"
+
+android {
+    compileSdkVersion 30
+    buildToolsVersion "29.0.3"
+
+    defaultConfig {
+        applicationId "com.bnsoft.flybox"
+        minSdkVersion 21
+        targetSdkVersion 30
+        versionCode 1
+        versionName "0.0.1"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+
+            firebaseCrashlytics {
+                nativeSymbolUploadEnabled true
+                strippedNativeLibsDir "${project.buildDir}/intermediates/stripped_native_libs/release/out/lib"
+                unstrippedNativeLibsDir unstrippedLibsDir
+            }
+        }
+    }
+
+    splits {
+        if (dgis_sdk_version.endsWith("SNAPSHOT") && !dgis_sdk_version.endsWith("RC-SNAPSHOT")) {
+            /*
+            SNAPSHOT собирается только x86, armeabi-v7a для эконимии ресурса на билд сервере
+            RELEASE есть под все возможные ABI
+             */
+            abi {
+                enable true
+                reset()
+                include "x86", "armeabi-v7a"
+                universalApk false
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    kotlinOptions {
+        jvmTarget = "1.8"
+    }
+}
+
+def resolvedSdkVersion = project.getObjects().property(ResolvedDependency)
+
+def resolveVersionTask = tasks.register("resolveSDKVersion") {
+    doLast {
+        def sdkModule = configurations.releaseRuntimeClasspath.resolvedConfiguration.getFirstLevelModuleDependencies().find {
+            it.getModuleGroup() == 'ru.dgis.sdk'
+        }
+        if (sdkModule == null) {
+            throw GradleException("ru.dgis.sdk is not found in dependencies")
+        }
+        resolvedSdkVersion.set(sdkModule)
+        logger.quiet("Resolved 2GIS SDK is ${sdkModule.getModuleName()}:${sdkModule.getModuleVersion()}")
+    }
+}
+
+def fetchingTasks = ['x86', 'x86_64', 'armeabi-v7a', 'arm64-v8a'].collect { arch ->
+    def libsArchive = "${project.buildDir}/downloads/${arch}.zip"
+
+    def downloadTask = project.tasks.register("downloadLibs-$arch", Download) {
+        dependsOn resolveVersionTask
+
+        src resolvedSdkVersion.map { sdkModule ->
+            def libsUrl = localProperties.getProperty("dgisUnstrippedLibsUrl", "")
+            if (libsUrl.isEmpty()) {
+                throw GradleException("You have to define dgisUnstrippedLibsUrl in local.properties to use unstripped libraries")
+            }
+            def version = sdkModule.getModuleVersion()
+            def flavour = sdkModule.getModuleName().split('-').last()
+
+            "${libsUrl}/sdk-bundle-release/android/ru/dgis/sdk/libs-${flavour}/${version}/${version}-${flavour}-${arch}.zip"
+        }
+        dest libsArchive
+        username System.getenv('ARTIFACTORY_USERNAME')
+        password System.getenv('ARTIFACTORY_PASSWORD')
+        overwrite false
+    }
+    project.tasks.register("unzipLibs-$arch", Copy) {
+        dependsOn downloadTask
+
+        from zipTree(libsArchive)
+        into "$unstrippedLibsDir/${arch}"
+    }
+}
+
+def getUnstrippedTask = tasks.register("getUnstrippedLibraries") {
+    group "Release Build"
+    description "Downloads unstripped native libraries for all architectures"
+
+    dependsOn fetchingTasks
+}
+
+afterEvaluate { project ->
+    def uploadTasks = project.tasks.matching {
+        it.name.contains('CrashlyticsSymbolFile')
+    }
+    uploadTasks.forEach {
+        it.configure {
+            dependsOn getUnstrippedTask
+        }
+    }
+    project.tasks.processDebugGoogleServices {
+       onlyIf { false }
+    }
+}
+
+dependencies {
+    implementation fileTree(dir: "libs", include: ["*.jar"])
+    implementation "androidx.appcompat:appcompat:1.2.0"
+    implementation "androidx.constraintlayout:constraintlayout:2.0.4"
+    implementation "androidx.core:core-ktx:1.3.2"
+    implementation "androidx.fragment:fragment-ktx:1.3.0"
+    implementation "androidx.legacy:legacy-support-v4:1.0.0"
+    implementation "com.google.android.gms:play-services-location:17.1.0"
+    implementation "com.google.android.material:material:1.3.0"
+    implementation "com.sothree.slidinguppanel:library:3.4.0"
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
+    implementation 'net.sourceforge.streamsupport:android-retrofuture:1.7.3'
+
+    releaseImplementation platform('com.google.firebase:firebase-bom:26.1.0')
+    releaseImplementation 'com.google.firebase:firebase-analytics'
+    releaseImplementation 'com.google.firebase:firebase-crashlytics-ndk'
+
+    implementation "ru.dgis.sdk:sdk-full:$dgis_sdk_version"
+}

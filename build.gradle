@@ -1,0 +1,42 @@
+buildscript {
+    ext {
+        kotlin_version = "1.4.21"
+        dgis_sdk_version = "4.0.+"
+        gradle_download_module= "4.1.1"
+    }
+    repositories {
+        google()
+        jcenter()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:4.1.2'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+        classpath 'com.google.gms:google-services:4.3.4'
+        classpath 'com.google.firebase:firebase-crashlytics-gradle:2.4.1'
+        classpath "de.undercouch:gradle-download-task:$gradle_download_module"
+    }
+}
+
+def localProperties = new Properties()
+localProperties.load(new FileInputStream(rootProject.file("local.properties")))
+
+allprojects {
+    repositories {
+        google()
+        jcenter()
+
+        maven {
+            url localProperties.getProperty('sdkRepository', 'https://artifactory.2gis.dev/sdk-maven-release')
+        }
+    }
+}
+
+rootProject.buildDir = 'build'
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}
